@@ -1,0 +1,16 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model devices {
+  id      Int     @id @default(autoincrement())
+  nama    String? @db.VarChar(100)
+  ip      String  @db.VarChar(50)
+  lokasi  String  @db.VarChar(100)
+  status  String  @db.VarChar(20)
+  latency Float?  @db.Float
+}

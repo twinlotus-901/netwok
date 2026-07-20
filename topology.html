@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Topology Network Monitor</title>
+  <style>
+    :root{
+      --bg:#0b1020;
+      --card:#121a33;
+      --border:#223057;
+      --text:#e8eefc;
+      --muted:#b9c7ff;
+      --online:#26d07c;
+      --offline:#ff4d4d;
+      --warning:#f2c94c;
+    }
+    *{box-sizing:border-box}
+    body{font-family:Arial, Helvetica, sans-serif;margin:0;background:var(--bg);color:var(--text)}
+    header{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;gap:12px;align-items:center;justify-content:space-between}
+    header h1{font-size:16px;margin:0}
+    header a{color:var(--muted);text-decoration:none;border:1px solid var(--border);padding:8px 10px;border-radius:10px;background:#0f1733}
+    .layout{display:flex;min-height:calc(100vh - 58px)}
+    .main{flex:1;display:flex;align-items:center;justify-content:center;padding:14px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+    #graph{width:min(900px,100%);height:640px}
+    .sidebar{width:320px;max-width:92vw;padding:14px}
+    .sidebar h2{font-size:14px;margin:0 0 10px;color:var(--muted)}
+    .detail{padding:12px;border-radius:12px;white-space:pre-wrap;min-height:120px;background:#0f1733;border:1px dashed var(--border);color:var(--text);font-size:13px;line-height:1.5}
+    .hint{color:var(--muted);font-size:12px;margin-top:10px;line-height:1.4}
+    .status-badge{display:inline-block;padding:4px 8px;border-radius:999px;font-weight:700;font-size:12px}
+    .status-badge.online{background:rgba(38,208,124,.15);color:var(--online);border:1px solid rgba(38,208,124,.35)}
+    .status-badge.offline{background:rgba(255,77,77,.15);color:var(--offline);border:1px solid rgba(255,77,77,.35)}
+    .status-badge.warning{background:rgba(242,201,76,.15);color:var(--warning);border:1px solid rgba(242,201,76,.35)}
+    .row{display:flex;gap:10px;align-items:flex-start;justify-content:space-between}
+    .k{color:var(--muted);font-size:12px}
+  </style>
+</head>
+<body>
+<header>
+  <h1>Topology - Network Monitor</h1>
+  <div style="display:flex;gap:12px;align-items:center;">
+    <span id="liveBadge" class="status-badge online">LIVE</span>
+    <span id="liveMeta" style="font-size:12px;color:var(--muted);font-family:monospace">00:00:00</span>
+    <a href="/index.html">← Kembali ke Index</a>
+  </div>
+</header>
+
+<div class="layout">
+  <div class="main">
+    <div class="card" style="padding:12px;width:100%;">
+      <div id="graph"></div>
+  </div>
+  <aside class="sidebar">
+    <h2>Informasi Perangkat</h2>
+    <div class="detail" id="detailPanel">Klik node pada diagram untuk melihat detail perangkat.</div>
+
+    <div style="margin-top:14px;">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:8px;font-weight:700;">Kabel Manual</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+        <label style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);cursor:pointer;">
+          <input type="radio" name="cableType" value="normal" checked /> Normal (solid abu-abu)
+        </label>
+        <label style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);cursor:pointer;">
+          <input type="radio" name="cableType" value="backup" /> Backup (dashed oranye)
+        </label>
+      </div>
+      <div class="hint" id="cableHint">Klik 2 node: node asal lalu node tujuan.</div>
+      <div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
+        <button id="clearManualEdges" style="padding:8px 10px;border-radius:10px;background:#0f1733;border:1px solid var(--border);color:var(--text);cursor:pointer;">Hapus Semua</button>
+        <span class="k" id="pendingHint">&nbsp;</span>
+      </div>
+  </aside>
+</div>
+
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<script>
+// ==================== CONSTS ====================
+const LS_DEVICES_KEY = 'networkmon_devices_v1';
+const LS_POS_KEY = 'topology_node_positions_v1';
+const LS_MANUAL_EDGES_KEY = 'topology_manual_edges_v1';
+
+const MANUAL_NORMAL_COLOR = '#9aa4b2';
+const MANUAL_BACKUP_COLOR = '#f2994a';
+const AUTO_EDGE_COLOR = '#5a6a82';
+
+// ==================== LOCAL STORAGE HELPERS ====================
+function loadDevices() {
+  try {
+    const raw = localStorage.getItem(LS_DEVICES_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch(e) { return []; }
+}
+
+function saveDevices(devices) {
+  try { localStorage.setItem(LS_DEVICES_KEY, JSON.stringify(devices)); } catch(e) {}
+}
+
+function loadNodePositions() {
+  try {
+    const raw = localStorage.getItem(LS_POS_KEY);
+    return raw ? (JSON.parse(raw) || {}) : {};
+  } catch(e) { return {}; }
+}
+
+function saveNodePositions(positions) {
+  try { localStorage.setItem(LS_POS_KEY, JSON.stringify(positions)); } catch(e) {}
+}
+
+function loadManualEdges() {
+  try {
+    const raw = localStorage.getItem(LS_MANUAL_EDGES_KEY);
+    return raw ? (JSON.parse(raw) || []) : [];
+  } catch(e) { return []; }
+}
+
+function saveManualEdges(arr) {
+  try { localStorage.setItem(LS_MANUAL_EDGES_KEY, JSON.stringify(arr)); } catch(e) {}
+}
+
+// ==================== STATE ====================
+let selectedCableType = 'normal';
+let pendingFromNodeId = null;
+let manualEdgeCounter = Date.now();
+
+const persistedPositions = loadNodePositions();
+let persistedManualEdges = loadManualEdges();
+
+// ==================== UI REFS ====================
+const detailPanel = document.getElementById('detailPanel');
+const cableHint = document.getElementById('cableHint');
+const pendingHint = document.getElementById('pendingHint');
+const liveBadge = document.getElementById('liveBadge');
+
+// ==================== SETUP VIS ====================
+const nodes = new vis.DataSet([]);
+const edges = new vis.DataSet([]);
+const container = document.getElementById('graph');
+
+const network = new vis.Network(container, { nodes, edges }, {
+  autoResize: true,
+  physics: { enabled: false },
+  interaction: {
+    hover: true,
+    tooltipDelay: 50,
+    dragNodes: true,
+    multiselect: false,
+    selectConnectedEdges: false,
+  },
+  nodes: {
+    shape: 'box',
+    size: 16,
+    borderWidth: 2,
+    margin: 8,
+    shadow: false,
+    font: { color: '#e8eefc', size: 12, face: 'Arial' },
+  },
+  edges: { smooth: false, width: 2 },
+});
+
+// ==================== HELPERS ====================
+function escapeHtml(str) {
+  return String(str).replaceAll('&','&amp;').replaceAll('<','<').replaceAll('>','>').replaceAll('"','"').replaceAll("'",'&#039;');
+}
+
+function latencyToWarning(status, latency) {
+  if (status !== 'online') return false;
+  if (latency == null) return false;
+  return Number(latency) > 100;
+}
+
+function getNodeColor(device) {
+  if (!device || !device.status) return '#ff4d4d';
+  if (device.status === 'online') {
+    return latencyToWarning(device.status, device.latency) ? '#f2c94c' : '#26d07c';
+  }
+  return '#ff4d4d';
+}
+
+function formatLatency(ms) {
+  if (ms == null) return '-';
+  return Math.round(Number(ms) * 100) / 100 + ' ms';
+}
+
+// ==================== RENDER TOPOLOGY ====================
+function renderTopology(devices) {
+  const posById = persistedPositions || {};
+
+  const existingIds = new Set(nodes.getIds().map(String));
+
+  devices.forEach(d => {
+    const sid = String(d.id);
+    const borderColor = getNodeColor(d);
+    const label = [d.nama || '-', d.ip || ''].filter(Boolean).join('\n');
+
+    if (existingIds.has(sid)) {
+      nodes.update({
+        id: d.id,
+        label,
+        color: { background: '#121a33', border: borderColor, highlight: { background: '#121a33', border: borderColor } },
+        borderWidth: 2,
+        borderWidthSelected: 2,
+        shadow: { enabled: latencyToWarning(d.status, d.latency), color: borderColor, size: 8, x: 0, y: 0 },
+      });
+    } else {
+      nodes.add({
+        id: d.id,
+        x: posById[sid]?.x,
+        y: posById[sid]?.y,
+        label,
+        color: { background: '#121a33', border: borderColor, highlight: { background: '#121a33', border: borderColor } },
+        borderWidth: 2,
+        borderWidthSelected: 2,
+        shadow: { enabled: latencyToWarning(d.status, d.latency), color: borderColor, size: 8, x: 0, y: 0 },
+      });
+    }
+  });
+
+  const validIds = new Set(devices.map(d => String(d.id)));
+  nodes.getIds().forEach(nid => {
+    if (!validIds.has(String(nid))) nodes.remove(nid);
+  });
+
+  const toRemove = edges.getIds().filter(id => {
+    const e = edges.get(id);
+    return e && e._kind === 'auto';
+  });
+  if (toRemove.length) edges.remove(toRemove);
+
+  if (devices.length > 1) {
+    const first = devices[0];
+    for (let i = 1; i < devices.length; i++) {
+      const edgeId = 'auto-' + first.id + '-' + devices[i].id;
+      if (!edges.getIds().some(eid => {
+        const e = edges.get(eid);
+        return e && e._kind === 'auto' && String(e.from) === String(first.id) && String(e.to) === String(devices[i].id);
+      })) {
+        edges.add({
+          id: edgeId,
+          from: first.id,
+          to: devices[i].id,
+          color: { color: AUTO_EDGE_COLOR },
+          _kind: 'auto',
+        });
+      }
+    }
+  }
+
+  applyPersistedManualEdges(devices);
+}
+
+// ==================== MANUAL EDGES ====================
+function applyPersistedManualEdges(devices) {
+  if (!persistedManualEdges || !devices) return;
+  const deviceIds = new Set(devices.map(d => String(d.id)));
+
+  persistedManualEdges.forEach(e => {
+    const from = String(e.from);
+    const to = String(e.to);
+    const cableType = e.cableType === 'backup' ? 'backup' : 'normal';
+    if (!deviceIds.has(from) || !deviceIds.has(to)) return;
+
+    const already = edges.getIds().some(eid => {
+      const ed = edges.get(eid);
+      return ed && ed._kind === 'manual' && String(ed.from) === from && String(ed.to) === to && String(ed._cableType) === cableType;
+    });
+    if (already) return;
+
+    const isBackup = cableType === 'backup';
+    const newId = 'm-' + from + '-' + to + '-' + cableType + '-' + (manualEdgeCounter++);
+    edges.add({
+      id: newId,
+      from: Number(from),
+      to: Number(to),
+      color: { color: isBackup ? MANUAL_BACKUP_COLOR : MANUAL_NORMAL_COLOR },
+      width: 2,
+      dashes: isBackup ? [8, 6] : false,
+      _kind: 'manual',
+      _cableType: cableType,
+    });
+  });
+}
+
+// ==================== UI CABLE SELECTOR ====================
+function updateCableHint() {
+  const fromText = pendingFromNodeId ? 'Dari node #' + pendingFromNodeId : 'Klik node asal';
+  const typeText = selectedCableType === 'normal' ? 'Normal (solid abu-abu)' : 'Backup (dashed oranye)';
+  if (pendingHint) pendingHint.textContent = pendingFromNodeId ? 'Pilih node tujuan...' : '';
+  if (cableHint) cableHint.textContent = fromText + '. Jenis: ' + typeText + '.';
+}
+
+document.querySelectorAll('input[name="cableType"]').forEach(el => {
+  el.addEventListener('change', () => {
+    selectedCableType = el.value;
+    updateCableHint();
+  });
+});
+
+document.getElementById('clearManualEdges').addEventListener('click', () => {
+  const manualIds = edges.getIds().filter(id => {
+    const e = edges.get(id);
+    return e && e._kind === 'manual';
+  });
+  if (manualIds.length) edges.remove(manualIds);
+  persistedManualEdges = [];
+  saveManualEdges(persistedManualEdges);
+  pendingFromNodeId = null;
+  updateCableHint();
+});
+
+// ==================== PING MONITOR + POLL ====================
+let focusNodeId = null;
+try {
+  const params = new URLSearchParams(window.location.search);
+  focusNodeId = params.get('focus') || null;
+} catch(e) {}
+
+async function poll() {
+  try {
+    let devices = loadDevices();
+
+    if (devices.length > 0) {
+      const results = await Promise.allSettled(
+        devices.map(async d => {
+          try {
+            const res = await fetch('/ping', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ip: d.ip })
+            });
+            const data = await res.json();
+            return { id: d.id, status: data.status, latency: data.latency };
+          } catch(e) {
+            return { id: d.id, status: 'offline', latency: null };
+          }
+        })
+      );
+
+      let changed = false;
+      results.forEach(r => {
+        if (r.status === 'fulfilled' && r.value) {
+          const dev = devices.find(x => x.id === r.value.id);
+          if (dev && (dev.status !== r.value.status || dev.latency !== r.value.latency)) {
+            dev.status = r.value.status;
+            dev.latency = r.value.latency;
+            changed = true;
+          }
+        }
+      });
+      if (changed) saveDevices(devices);
+    }
+
+    renderTopology(devices);
+
+    if (focusNodeId) {
+      const nid = Number(focusNodeId);
+      if (devices.some(d => d.id === nid)) {
+        network.selectNodes([nid], false);
+        network.focus(nid, { scale: 1.2, animation: true });
+        const device = devices.find(d => d.id === nid);
+        if (device) {
+          const cls = statusClass(device);
+          detailPanel.innerHTML = [
+            '<div class="row"><div class="k">Nama</div><div>' + escapeHtml(device.nama || '-') + '</div>',
+            '<div class="row"><div class="k">IP</div><div>' + escapeHtml(device.ip || '-') + '</div>',
+            '<div class="row"><div class="k">Lokasi</div><div>' + escapeHtml(device.lokasi || '-') + '</div>',
+            '<div class="row"><div class="k">Status</div><div><span class="status-badge ' + cls + '">' + escapeHtml(device.status || '-') + '</span></div>',
+            '<div class="row"><div class="k">Latensi</div><div>' + formatLatency(device.latency) + '</div>',
+          ].join('');
+        }
+      }
+      focusNodeId = null;
+    }
+  } catch(e) {}
+}
+
+function statusClass(device) {
+  if (!device || !device.status) return 'offline';
+  if (device.status === 'online') return latencyToWarning(device.status, device.latency) ? 'warning' : 'online';
+  return 'offline';
+}
+
+// ==================== NETWORK EVENTS ====================
+network.on('click', function(params) {
+  try { network.unselectAll(); } catch(e) {}
+
+  if (!params.nodes || params.nodes.length === 0) return;
+  const id = params.nodes[0];
+  const devices = loadDevices();
+  const device = devices.find(x => String(x.id) === String(id));
+  if (!device) return;
+
+  const cls = statusClass(device);
+  detailPanel.innerHTML = [
+    '<div class="row"><div class="k">Nama</div><div>' + escapeHtml(device.nama || '-') + '</div>',
+    '<div class="row"><div class="k">IP</div><div>' + escapeHtml(device.ip || '-') + '</div>',
+    '<div class="row"><div class="k">Lokasi</div><div>' + escapeHtml(device.lokasi || '-') + '</div>',
+    '<div class="row"><div class="k">Status</div><div><span class="status-badge ' + cls + '">' + escapeHtml(device.status || '-') + '</span></div>',
+    '<div class="row"><div class="k">Latensi</div><div>' + formatLatency(device.latency) + '</div>',
+  ].join('');
+
+  if (pendingFromNodeId === null) {
+    pendingFromNodeId = id;
+    updateCableHint();
+    return;
+  }
+
+  if (String(pendingFromNodeId) === String(id)) {
+    pendingFromNodeId = null;
+    updateCableHint();
+    return;
+  }
+
+  const from = pendingFromNodeId;
+  const to = id;
+  const isBackup = selectedCableType === 'backup';
+
+  const hasSame = edges.getIds().some(eid => {
+    const e = edges.get(eid);
+    return e && e._kind === 'manual' && String(e.from) === String(from) && String(e.to) === String(to) && String(e._cableType) === selectedCableType;
+  });
+
+  if (!hasSame) {
+    const newId = 'm-' + from + '-' + to + '-' + selectedCableType + '-' + (manualEdgeCounter++);
+    edges.add({
+      id: newId,
+      from: Number(from),
+      to: Number(to),
+      color: { color: isBackup ? MANUAL_BACKUP_COLOR : MANUAL_NORMAL_COLOR },
+      width: 2,
+      dashes: isBackup ? [8, 6] : false,
+      _kind: 'manual',
+      _cableType: selectedCableType,
+    });
+
+    persistedManualEdges.push({ from: String(from), to: String(to), cableType: selectedCableType });
+    saveManualEdges(persistedManualEdges);
+  }
+
+  pendingFromNodeId = null;
+  updateCableHint();
+});
+
+network.on('dragEnd', function(params) {
+  try {
+    const nodeId = params && params.nodes && params.nodes.length ? String(params.nodes[0]) : null;
+    if (!nodeId) return;
+    const pos = network.getPositions([nodeId]);
+    if (!pos || !pos[nodeId]) return;
+    persistedPositions[String(nodeId)] = { x: pos[nodeId].x, y: pos[nodeId].y };
+    saveNodePositions(persistedPositions);
+  } catch(e) {}
+});
+
+// ==================== LIVE TIMER ====================
+const liveTimerStart = Date.now();
+function pad2(n) { return String(n).padStart(2, '0'); }
+function renderLiveTimer() {
+  const elapsed = Date.now() - liveTimerStart;
+  const totalSeconds = Math.floor(elapsed / 1000);
+  document.getElementById('liveMeta').textContent =
+    pad2(Math.floor(totalSeconds / 3600)) + ':' +
+    pad2(Math.floor((totalSeconds % 3600) / 60)) + ':' +
+    pad2(totalSeconds % 60);
+}
+renderLiveTimer();
+setInterval(renderLiveTimer, 1000);
+
+// ==================== START ====================
+poll();
+setInterval(poll, 5000);
+</script>
+</body>
+</html>

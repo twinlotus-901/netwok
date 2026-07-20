@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Network Monitor Realtime</title>
+  <style>
+    :root{
+      --bg:#0b1020;
+      --card:#121a33;
+      --border:#223057;
+      --text:#e8eefc;
+      --muted:#b9c7ff;
+      --online:#26d07c;
+      --offline:#ff4d4d;
+      --warning:#f2c94c;
+    }
+    *{box-sizing:border-box}
+    body{font-family:Arial, Helvetica, sans-serif;margin:20px;background:var(--bg);color:var(--text)}
+    h1{margin:0 0 14px;font-size:20px;display:flex;align-items:center;gap:10px}
+    a.topo{color:var(--muted);text-decoration:none;border:1px solid var(--border);padding:8px 10px;border-radius:10px;background:#0f1733;font-size:12px}
+    .card{background:var(--card);padding:14px;border-radius:10px;margin-bottom:14px;border:1px solid var(--border)}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px;border-bottom:1px solid var(--border);text-align:left}
+    th{color:var(--muted);font-weight:600;font-size:13px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .row>div{flex:1;min-width:200px}
+    label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+    input{width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:#0f1733;color:var(--text);outline:none}
+    input:focus{border-color:var(--online)}
+    button{padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:#1f2b55;color:var(--text);cursor:pointer}
+    button:hover{background:#25336a}
+    .actions{display:flex;gap:10px;align-items:end;flex-wrap:wrap}
+    .small{font-size:12px;color:var(--muted)}
+    .muted{color:var(--muted)}
+    .online{color:var(--online);font-weight:700}
+    .offline{color:var(--offline);font-weight:700}
+    .warning{color:var(--warning);font-weight:700}
+    .details{white-space:pre-wrap;background:#0f1733;border:1px dashed var(--border);padding:12px;border-radius:10px;min-height:80px}
+    .status-badge{display:inline-block;padding:4px 8px;border-radius:999px;font-weight:700;font-size:12px}
+    .status-badge.online{background:rgba(38,208,124,.15);color:var(--online);border:1px solid rgba(38,208,124,.35)}
+    .status-badge.offline{background:rgba(255,77,77,.15);color:var(--offline);border:1px solid rgba(255,77,77,.35)}
+    .status-badge.warning{background:rgba(242,201,76,.15);color:var(--warning);border:1px solid rgba(242,201,76,.35)}
+  </style>
+</head>
+<body>
+
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap;">
+  <h1 style="margin:0">Network Monitor Realtime</h1>
+  <a class="topo" href="/topology.html">Topology</a>
+  <div id="liveBadge" class="status-badge online">LIVE</div>
+  <span id="liveMeta" style="font-size:12px;color:var(--muted);font-family:monospace">00:00:00</span>
+</div>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+    <span class="small">Update otomatis tiap 5 detik</span>
+    <span class="small">Terakhir update: <span id="lastUpdate">-</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:60px">ID</th>
+        <th>Nama</th>
+        <th style="width:150px">IP</th>
+        <th>Lokasi</th>
+        <th style="width:90px">Status</th>
+        <th style="width:90px">Latensi</th>
+      </tr>
+    </thead>
+    <tbody id="deviceBody"></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2 style="margin:0 0 10px;font-size:16px;">Detail Perangkat</h2>
+  <div class="details" id="detailPanel">Klik baris perangkat untuk melihat detail.</div>
+
+<div class="card">
+  <h2 style="margin:0 0 10px;font-size:16px;">Form Tambah Perangkat</h2>
+  <form id="addForm" class="row" onsubmit="return false;">
+    <div><label for="addNama">Nama perangkat</label><input id="addNama" placeholder="contoh: Router Kantor" required /></div>
+    <div><label for="addIp">IP (IPv4)</label><input id="addIp" placeholder="contoh: 192.168.1.10" required /></div>
+    <div><label for="addLokasi">Lokasi</label><input id="addLokasi" placeholder="contoh: Ruang Server" required /></div>
+    <div class="actions"><button type="submit">Tambah</button></div>
+  </form>
+  <div id="addMsg" class="small muted" style="margin-top:10px;"></div>
+
+<div class="card">
+  <h2 style="margin:0 0 10px;font-size:16px;">Form Ubah IP</h2>
+  <form id="editForm" class="row" onsubmit="return false;">
+    <div><label for="editId">ID perangkat</label><input id="editId" type="number" min="1" required placeholder="contoh: 1" /><div class="small">Isi sesuai ID pada tabel.</div>
+    <div><label for="editIp">IP baru (IPv4)</label><input id="editIp" placeholder="contoh: 192.168.1.20" required /></div>
+    <div class="actions"><button type="submit">Simpan</button></div>
+  </form>
+  <div id="editMsg" class="small muted" style="margin-top:10px;"></div>
+
+<script>
+// ==================== LOCAL STORAGE DEVICES ====================
+const LS_KEY = 'networkmon_devices_v1';
+
+function loadDevices() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch(e) { return []; }
+}
+
+function saveDevices(devices) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(devices)); } catch(e) {}
+}
+
+function getNextId(devices) {
+  let max = 0;
+  devices.forEach(d => { if (d.id > max) max = d.id; });
+  return max + 1;
+}
+
+// ==================== UI REFS ====================
+const deviceBody = document.getElementById('deviceBody');
+const lastUpdateEl = document.getElementById('lastUpdate');
+const detailPanel = document.getElementById('detailPanel');
+
+// ==================== HELPERS ====================
+function escapeHtml(str) {
+  return String(str).replaceAll('&','&amp;').replaceAll('<','<').replaceAll('>','>').replaceAll('"','"').replaceAll("'",'&#039;');
+}
+
+function latencyToWarning(status, latency) {
+  if (status !== 'online') return false;
+  if (latency == null) return false;
+  return Number(latency) > 100;
+}
+
+function statusClass(device) {
+  if (!device || !device.status) return 'offline';
+  if (device.status === 'online') return latencyToWarning(device.status, device.latency) ? 'warning' : 'online';
+  return 'offline';
+}
+
+function formatLatency(ms) {
+  if (ms == null) return '-';
+  return Math.round(Number(ms) * 100) / 100 + ' ms';
+}
+
+// ==================== RENDER TABLE ====================
+function renderDevices(devices) {
+  deviceBody.innerHTML = '';
+  if (!devices || devices.length === 0) {
+    deviceBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">Belum ada perangkat. Tambahkan melalui form di bawah.</td></tr>';
+    return;
+  }
+  devices.forEach(d => {
+    const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    tr.innerHTML = `
+      <td>${d.id}</td>
+      <td>${escapeHtml(d.nama)}</td>
+      <td>${escapeHtml(d.ip)}</td>
+      <td>${escapeHtml(d.lokasi || '-')}</td>
+      <td><span class="status-badge ${statusClass(d)}">${escapeHtml(d.status || '-')}</span></td>
+      <td>${formatLatency(d.latency)}</td>
+    `;
+    tr.addEventListener('click', () => {
+      const lines = [
+        `ID       : ${d.id}`,
+        `Nama     : ${d.nama}`,
+        `IP       : ${d.ip}`,
+        `Lokasi   : ${d.lokasi || '-'}`,
+        `Status   : ${d.status || '-'}`,
+        `Latensi  : ${formatLatency(d.latency)}`,
+      ];
+      detailPanel.innerHTML = lines.map(l => '<div>' + escapeHtml(l) + '</div>').join('');
+
+      // Buka topology dengan fokus node
+      window.location.href = '/topology.html?focus=' + encodeURIComponent(String(d.id));
+    });
+    deviceBody.appendChild(tr);
+  });
+}
+
+// ==================== ICMP MONITOR ====================
+async function monitorDevices(devices) {
+  if (!devices || devices.length === 0) return devices;
+  const updated = JSON.parse(JSON.stringify(devices));
+  let changed = false;
+
+  const results = await Promise.allSettled(
+    updated.map(async (d) => {
+      try {
+        const res = await fetch('/ping', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip: d.ip })
+        });
+        const data = await res.json();
+        return { id: d.id, status: data.status, latency: data.latency };
+      } catch(e) {
+        return { id: d.id, status: 'offline', latency: null };
+      }
+    })
+  );
+
+  results.forEach(r => {
+    if (r.status === 'fulfilled' && r.value) {
+      const dev = updated.find(x => x.id === r.value.id);
+      if (dev) {
+        if (dev.status !== r.value.status || dev.latency !== r.value.latency) {
+          dev.status = r.value.status;
+          dev.latency = r.value.latency;
+          changed = true;
+        }
+      }
+    }
+  });
+
+  if (changed) {
+    saveDevices(updated);
+  }
+  return updated;
+}
+
+// ==================== POLLING ====================
+async function poll() {
+  try {
+    let devices = loadDevices();
+    devices = await monitorDevices(devices);
+    renderDevices(devices);
+    lastUpdateEl.textContent = new Date().toLocaleTimeString();
+  } catch(e) {
+    // ignore
+  }
+}
+
+// ==================== FORM TAMBAH ====================
+document.getElementById('addForm').addEventListener('submit', () => {
+  const addMsg = document.getElementById('addMsg');
+  addMsg.textContent = 'Menambahkan...';
+  addMsg.style.color = '';
+
+  const nama = document.getElementById('addNama').value.trim();
+  const ip = document.getElementById('addIp').value.trim();
+  const lokasi = document.getElementById('addLokasi').value.trim();
+
+  if (!nama || !ip || !lokasi) {
+    addMsg.textContent = 'Semua field wajib diisi.';
+    addMsg.style.color = '#ff4d4d';
+    return;
+  }
+
+  const ipParts = ip.split('.');
+  if (ipParts.length !== 4 || !ipParts.every(p => /^\d+$/.test(p) && Number(p) >= 0 && Number(p) <= 255)) {
+    addMsg.textContent = 'IP tidak valid. Harus IPv4.';
+    addMsg.style.color = '#ff4d4d';
+    return;
+  }
+
+  const devices = loadDevices();
+
+  if (devices.some(d => d.ip === ip)) {
+    addMsg.textContent = 'IP sudah ada.';
+    addMsg.style.color = '#ff4d4d';
+    return;
+  }
+
+  const newDevice = {
+    id: getNextId(devices),
+    nama,
+    ip,
+    lokasi,
+    status: 'unknown',
+    latency: null
+  };
+  devices.push(newDevice);
+  saveDevices(devices);
+
+  addMsg.textContent = 'Perangkat berhasil ditambahkan.';
+  addMsg.style.color = '#26d07c';
+  document.getElementById('addForm').reset();
+  poll();
+});
+
+// ==================== FORM UBAH IP ====================
+document.getElementById('editForm').addEventListener('submit', () => {
+  const editMsg = document.getElementById('editMsg');
+  editMsg.textContent = 'Menyimpan...';
+  editMsg.style.color = '';
+
+  const id = Number(document.getElementById('editId').value);
+  const ip = document.getElementById('editIp').value.trim();
+
+  if (!id || id <= 0) {
+    editMsg.textContent = 'ID tidak valid.';
+    editMsg.style.color = '#ff4d4d';
+    return;
+  }
+
+  const ipParts = ip.split('.');
+  if (ipParts.length !== 4 || !ipParts.every(p => /^\d+$/.test(p) && Number(p) >= 0 && Number(p) <= 255)) {
+    editMsg.textContent = 'IP tidak valid. Harus IPv4.';
+    editMsg.style.color = '#ff4d4d';
+    return;
+  }
+
+  let devices = loadDevices();
+  const idx = devices.findIndex(d => d.id === id);
+  if (idx === -1) {
+    editMsg.textContent = 'Perangkat dengan ID tersebut tidak ditemukan.';
+    editMsg.style.color = '#ff4d4d';
+    return;
+  }
+
+  if (devices.some((d, i) => i !== idx && d.ip === ip)) {
+    editMsg.textContent = 'IP sudah ada pada perangkat lain.';
+    editMsg.style.color = '#ff4d4d';
+    return;
+  }
+
+  devices[idx].ip = ip;
+  devices[idx].status = 'offline';
+  devices[idx].latency = null;
+  saveDevices(devices);
+
+  editMsg.textContent = 'IP berhasil diubah.';
+  editMsg.style.color = '#26d07c';
+  document.getElementById('editForm').reset();
+  poll();
+});
+
+// ==================== LIVE TIMER ====================
+const liveTimerStart = Date.now();
+function pad2(n) { return String(n).padStart(2, '0'); }
+function renderLiveTimer() {
+  const elapsed = Date.now() - liveTimerStart;
+  const totalSeconds = Math.floor(elapsed / 1000);
+  document.getElementById('liveMeta').textContent =
+    pad2(Math.floor(totalSeconds / 3600)) + ':' +
+    pad2(Math.floor((totalSeconds % 3600) / 60)) + ':' +
+    pad2(totalSeconds % 60);
+}
+renderLiveTimer();
+setInterval(renderLiveTimer, 1000);
+
+// ==================== START ====================
+poll();
+setInterval(poll, 5000);
+</script>
+</body>
+</html>
