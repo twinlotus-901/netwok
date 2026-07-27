@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Topology Network Monitor</title>
+  <link rel="stylesheet" href="/css/style.css" />
   <style>
     :root{
       --bg:#0b1020;
@@ -34,6 +35,8 @@
     .status-badge.warning{background:rgba(242,201,76,.15);color:var(--warning);border:1px solid rgba(242,201,76,.35)}
     .row{display:flex;gap:10px;align-items:flex-start;justify-content:space-between}
     .k{color:var(--muted);font-size:12px}
+    .btn-danger{background:#5c1a1a;border-color:#8a2e2e;color:var(--text);padding:8px 10px;border-radius:10px;border:1px solid var(--border);cursor:pointer}
+    .btn-danger:hover{background:#7a2222}
   </style>
 </head>
 <body>
@@ -76,28 +79,13 @@
 <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 <script>
 // ==================== CONSTS ====================
-const LS_DEVICES_KEY = 'networkmon_devices_v1';
 const LS_POS_KEY = 'topology_node_positions_v1';
 const LS_MANUAL_EDGES_KEY = 'topology_manual_edges_v1';
 
 const MANUAL_NORMAL_COLOR = '#9aa4b2';
 const MANUAL_BACKUP_COLOR = '#f2994a';
-const AUTO_EDGE_COLOR = '#5a6a82';
 
 // ==================== LOCAL STORAGE HELPERS ====================
-function loadDevices() {
-  try {
-    const raw = localStorage.getItem(LS_DEVICES_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch(e) { return []; }
-}
-
-function saveDevices(devices) {
-  try { localStorage.setItem(LS_DEVICES_KEY, JSON.stringify(devices)); } catch(e) {}
-}
-
 function loadNodePositions() {
   try {
     const raw = localStorage.getItem(LS_POS_KEY);
@@ -127,12 +115,20 @@ let manualEdgeCounter = Date.now();
 
 const persistedPositions = loadNodePositions();
 let persistedManualEdges = loadManualEdges();
+let currentDevices = [];
 
 // ==================== UI REFS ====================
 const detailPanel = document.getElementById('detailPanel');
 const cableHint = document.getElementById('cableHint');
 const pendingHint = document.getElementById('pendingHint');
 const liveBadge = document.getElementById('liveBadge');
+
+// ==================== API HELPER ====================
+async function fetchDevices() {
+  const res = await fetch('/devices');
+  if (!res.ok) throw new Error('Gagal mengambil data');
+  return await res.json();
+}
 
 // ==================== SETUP VIS ====================
 const nodes = new vis.DataSet([]);
@@ -184,10 +180,16 @@ function formatLatency(ms) {
   return Math.round(Number(ms) * 100) / 100 + ' ms';
 }
 
+function statusClass(device) {
+  if (!device || !device.status) return 'offline';
+  if (device.status === 'online') return latencyToWarning(device.status, device.latency) ? 'warning' : 'online';
+  return 'offline';
+}
+
 // ==================== RENDER TOPOLOGY ====================
 function renderTopology(devices) {
+  currentDevices = devices;
   const posById = persistedPositions || {};
-
   const existingIds = new Set(nodes.getIds().map(String));
 
   devices.forEach(d => {
@@ -218,36 +220,22 @@ function renderTopology(devices) {
     }
   });
 
+  // Hapus node yang tidak ada di data
   const validIds = new Set(devices.map(d => String(d.id)));
   nodes.getIds().forEach(nid => {
-    if (!validIds.has(String(nid))) nodes.remove(nid);
-  });
-
-  const toRemove = edges.getIds().filter(id => {
-    const e = edges.get(id);
-    return e && e._kind === 'auto';
-  });
-  if (toRemove.length) edges.remove(toRemove);
-
-  if (devices.length > 1) {
-    const first = devices[0];
-    for (let i = 1; i < devices.length; i++) {
-      const edgeId = 'auto-' + first.id + '-' + devices[i].id;
-      if (!edges.getIds().some(eid => {
-        const e = edges.get(eid);
-        return e && e._kind === 'auto' && String(e.from) === String(first.id) && String(e.to) === String(devices[i].id);
-      })) {
-        edges.add({
-          id: edgeId,
-          from: first.id,
-          to: devices[i].id,
-          color: { color: AUTO_EDGE_COLOR },
-          _kind: 'auto',
-        });
-      }
+    if (!validIds.has(String(nid))) {
+      try {
+        const pos = network.getPositions([nid]);
+        if (pos && pos[nid]) {
+          persistedPositions[String(nid)] = { x: pos[nid].x, y: pos[nid].y };
+          saveNodePositions(persistedPositions);
+        }
+      } catch(e) {}
+      nodes.remove(nid);
     }
-  }
+  });
 
+  // Terapkan kabel manual yang tersimpan
   applyPersistedManualEdges(devices);
 }
 
@@ -310,7 +298,7 @@ document.getElementById('clearManualEdges').addEventListener('click', () => {
   updateCableHint();
 });
 
-// ==================== PING MONITOR + POLL ====================
+// ==================== POLL + FOCUS ====================
 let focusNodeId = null;
 try {
   const params = new URLSearchParams(window.location.search);
@@ -319,39 +307,7 @@ try {
 
 async function poll() {
   try {
-    let devices = loadDevices();
-
-    if (devices.length > 0) {
-      const results = await Promise.allSettled(
-        devices.map(async d => {
-          try {
-            const res = await fetch('/ping', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ ip: d.ip })
-            });
-            const data = await res.json();
-            return { id: d.id, status: data.status, latency: data.latency };
-          } catch(e) {
-            return { id: d.id, status: 'offline', latency: null };
-          }
-        })
-      );
-
-      let changed = false;
-      results.forEach(r => {
-        if (r.status === 'fulfilled' && r.value) {
-          const dev = devices.find(x => x.id === r.value.id);
-          if (dev && (dev.status !== r.value.status || dev.latency !== r.value.latency)) {
-            dev.status = r.value.status;
-            dev.latency = r.value.latency;
-            changed = true;
-          }
-        }
-      });
-      if (changed) saveDevices(devices);
-    }
-
+    const devices = await fetchDevices();
     renderTopology(devices);
 
     if (focusNodeId) {
@@ -376,20 +332,13 @@ async function poll() {
   } catch(e) {}
 }
 
-function statusClass(device) {
-  if (!device || !device.status) return 'offline';
-  if (device.status === 'online') return latencyToWarning(device.status, device.latency) ? 'warning' : 'online';
-  return 'offline';
-}
-
 // ==================== NETWORK EVENTS ====================
 network.on('click', function(params) {
   try { network.unselectAll(); } catch(e) {}
 
   if (!params.nodes || params.nodes.length === 0) return;
   const id = params.nodes[0];
-  const devices = loadDevices();
-  const device = devices.find(x => String(x.id) === String(id));
+  const device = currentDevices.find(x => String(x.id) === String(id));
   if (!device) return;
 
   const cls = statusClass(device);
@@ -401,6 +350,7 @@ network.on('click', function(params) {
     '<div class="row"><div class="k">Latensi</div><div>' + formatLatency(device.latency) + '</div>',
   ].join('');
 
+  // Cable logic: click 1 = from, click 2 = to
   if (pendingFromNodeId === null) {
     pendingFromNodeId = id;
     updateCableHint();

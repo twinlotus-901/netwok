@@ -7,9 +7,10 @@
     /* Environment Settings */
     "module": "esnext",
     "target": "esnext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "esModuleInterop": true,
     "types": ["node"],
+    "allowJs": true,
 
     /* Other Outputs */
     "sourceMap": true,
@@ -25,6 +26,6 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["./**/*.ts"],
+  "include": ["./**/*.js", "./**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

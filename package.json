@@ -1,20 +1,25 @@
 {
   "name": "network-monitor-realtime",
   "version": "1.0.0",
-  "description": "Realtime monitoring perangkat jaringan menggunakan Node.js, Express, dan ping.",
+  "description": "Realtime monitoring perangkat jaringan menggunakan Node.js, Express, Prisma, dan MySQL.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "npx prisma generate && node server.js",
+    "migrate": "npx prisma migrate dev --name init",
+    "postinstall": "npx prisma generate"
   },
   "dependencies": {
-    "@prisma/client": "^7.8.0",
+    "@prisma/adapter-mariadb": "^7.9.0",
+    "@prisma/client": "7.7",
+    "dotenv": "^17.4.2",
     "express": "^4.19.2",
+    "mariadb": "^3.5.3",
     "mysql2": "^3.23.0",
-    "ping": "^0.4.4"
+    "ping": "^0.4.4",
+    "prisma": "7.7"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
-    "prisma": "^7.8.0",
     "typescript": "^7.0.2"
   },
   "allowScripts": {

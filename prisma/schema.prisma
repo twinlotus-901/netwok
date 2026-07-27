@@ -4,13 +4,17 @@ generator client {
 
 datasource db {
   provider = "mysql"
+  url      = env("DATABASE_URL")
 }
 
-model devices {
-  id      Int     @id @default(autoincrement())
-  nama    String? @db.VarChar(100)
-  ip      String  @db.VarChar(50)
-  lokasi  String  @db.VarChar(100)
-  status  String  @db.VarChar(20)
-  latency Float?  @db.Float
+model Device {
+  id        Int      @id @default(autoincrement())
+  nama      String   @db.VarChar(100)
+  ip        String   @unique @db.VarChar(50)
+  lokasi    String?  @db.VarChar(100)
+  status    String   @default("offline") @db.VarChar(20)
+  latency   Int?
+  updatedAt DateTime @updatedAt
+
+  @@map("devices")
 }

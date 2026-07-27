@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Network Monitor Realtime</title>
+  <link rel="stylesheet" href="/css/style.css" />
   <style>
     :root{
       --bg:#0b1020;
@@ -41,6 +42,8 @@
     .status-badge.online{background:rgba(38,208,124,.15);color:var(--online);border:1px solid rgba(38,208,124,.35)}
     .status-badge.offline{background:rgba(255,77,77,.15);color:var(--offline);border:1px solid rgba(255,77,77,.35)}
     .status-badge.warning{background:rgba(242,201,76,.15);color:var(--warning);border:1px solid rgba(242,201,76,.35)}
+    .btn-danger{background:#5c1a1a;border-color:#8a2e2e}
+    .btn-danger:hover{background:#7a2222}
   </style>
 </head>
 <body>
@@ -66,6 +69,7 @@
         <th>Lokasi</th>
         <th style="width:90px">Status</th>
         <th style="width:90px">Latensi</th>
+        <th style="width:80px">Aksi</th>
       </tr>
     </thead>
     <tbody id="deviceBody"></tbody>
@@ -81,7 +85,7 @@
   <form id="addForm" class="row" onsubmit="return false;">
     <div><label for="addNama">Nama perangkat</label><input id="addNama" placeholder="contoh: Router Kantor" required /></div>
     <div><label for="addIp">IP (IPv4)</label><input id="addIp" placeholder="contoh: 192.168.1.10" required /></div>
-    <div><label for="addLokasi">Lokasi</label><input id="addLokasi" placeholder="contoh: Ruang Server" required /></div>
+    <div><label for="addLokasi">Lokasi</label><input id="addLokasi" placeholder="contoh: Ruang Server" /></div>
     <div class="actions"><button type="submit">Tambah</button></div>
   </form>
   <div id="addMsg" class="small muted" style="margin-top:10px;"></div>
@@ -96,32 +100,12 @@
   <div id="editMsg" class="small muted" style="margin-top:10px;"></div>
 
 <script>
-// ==================== LOCAL STORAGE DEVICES ====================
-const LS_KEY = 'networkmon_devices_v1';
-
-function loadDevices() {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch(e) { return []; }
-}
-
-function saveDevices(devices) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(devices)); } catch(e) {}
-}
-
-function getNextId(devices) {
-  let max = 0;
-  devices.forEach(d => { if (d.id > max) max = d.id; });
-  return max + 1;
-}
-
 // ==================== UI REFS ====================
 const deviceBody = document.getElementById('deviceBody');
 const lastUpdateEl = document.getElementById('lastUpdate');
 const detailPanel = document.getElementById('detailPanel');
+const addMsg = document.getElementById('addMsg');
+const editMsg = document.getElementById('editMsg');
 
 // ==================== HELPERS ====================
 function escapeHtml(str) {
@@ -145,88 +129,124 @@ function formatLatency(ms) {
   return Math.round(Number(ms) * 100) / 100 + ' ms';
 }
 
+// ==================== API HELPERS ====================
+async function fetchDevices() {
+  const res = await fetch('/devices');
+  if (!res.ok) throw new Error('Gagal mengambil data');
+  return await res.json();
+}
+
+async function addDevice(nama, ip, lokasi) {
+  const res = await fetch('/devices', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nama, ip, lokasi: lokasi || null }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Gagal menambah');
+  return data;
+}
+
+async function updateDeviceIp(id, ip) {
+  const res = await fetch('/devices/' + id, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ip }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Gagal mengubah IP');
+  return data;
+}
+
+async function deleteDevice(id) {
+  const res = await fetch('/devices/' + id, {
+    method: 'DELETE',
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Gagal menghapus');
+  return data;
+}
+
 // ==================== RENDER TABLE ====================
 function renderDevices(devices) {
   deviceBody.innerHTML = '';
   if (!devices || devices.length === 0) {
-    deviceBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">Belum ada perangkat. Tambahkan melalui form di bawah.</td></tr>';
+    deviceBody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px;">Belum ada perangkat. Tambahkan melalui form di bawah.</td></tr>';
     return;
   }
   devices.forEach(d => {
     const tr = document.createElement('tr');
     tr.style.cursor = 'pointer';
-    tr.innerHTML = `
-      <td>${d.id}</td>
-      <td>${escapeHtml(d.nama)}</td>
-      <td>${escapeHtml(d.ip)}</td>
-      <td>${escapeHtml(d.lokasi || '-')}</td>
-      <td><span class="status-badge ${statusClass(d)}">${escapeHtml(d.status || '-')}</span></td>
-      <td>${formatLatency(d.latency)}</td>
-    `;
+
+    const cls = statusClass(d);
+
+    const tdId = document.createElement('td');
+    tdId.textContent = d.id;
+
+    const tdNama = document.createElement('td');
+    tdNama.textContent = d.nama;
+
+    const tdIp = document.createElement('td');
+    tdIp.textContent = d.ip;
+
+    const tdLokasi = document.createElement('td');
+    tdLokasi.textContent = d.lokasi || '-';
+
+    const tdStatus = document.createElement('td');
+    const badge = document.createElement('span');
+    badge.className = 'status-badge ' + cls;
+    badge.textContent = d.status || '-';
+    tdStatus.appendChild(badge);
+
+    const tdLatency = document.createElement('td');
+    tdLatency.textContent = formatLatency(d.latency);
+
+    const tdAksi = document.createElement('td');
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn-danger';
+    deleteBtn.textContent = 'Hapus';
+    deleteBtn.style.padding = '6px 10px';
+    deleteBtn.style.fontSize = '12px';
+    deleteBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('Hapus perangkat "' + d.nama + '" (ID: ' + d.id + ')?')) return;
+      try {
+        await deleteDevice(d.id);
+        await poll();
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    });
+    tdAksi.appendChild(deleteBtn);
+
+    tr.appendChild(tdId);
+    tr.appendChild(tdNama);
+    tr.appendChild(tdIp);
+    tr.appendChild(tdLokasi);
+    tr.appendChild(tdStatus);
+    tr.appendChild(tdLatency);
+    tr.appendChild(tdAksi);
+
     tr.addEventListener('click', () => {
       const lines = [
-        `ID       : ${d.id}`,
-        `Nama     : ${d.nama}`,
-        `IP       : ${d.ip}`,
-        `Lokasi   : ${d.lokasi || '-'}`,
-        `Status   : ${d.status || '-'}`,
-        `Latensi  : ${formatLatency(d.latency)}`,
+        'ID       : ' + d.id,
+        'Nama     : ' + d.nama,
+        'IP       : ' + d.ip,
+        'Lokasi   : ' + (d.lokasi || '-'),
+        'Status   : ' + (d.status || '-'),
+        'Latensi  : ' + formatLatency(d.latency),
       ];
       detailPanel.innerHTML = lines.map(l => '<div>' + escapeHtml(l) + '</div>').join('');
-
-      // Buka topology dengan fokus node
-      window.location.href = '/topology.html?focus=' + encodeURIComponent(String(d.id));
     });
+
     deviceBody.appendChild(tr);
   });
-}
-
-// ==================== ICMP MONITOR ====================
-async function monitorDevices(devices) {
-  if (!devices || devices.length === 0) return devices;
-  const updated = JSON.parse(JSON.stringify(devices));
-  let changed = false;
-
-  const results = await Promise.allSettled(
-    updated.map(async (d) => {
-      try {
-        const res = await fetch('/ping', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ip: d.ip })
-        });
-        const data = await res.json();
-        return { id: d.id, status: data.status, latency: data.latency };
-      } catch(e) {
-        return { id: d.id, status: 'offline', latency: null };
-      }
-    })
-  );
-
-  results.forEach(r => {
-    if (r.status === 'fulfilled' && r.value) {
-      const dev = updated.find(x => x.id === r.value.id);
-      if (dev) {
-        if (dev.status !== r.value.status || dev.latency !== r.value.latency) {
-          dev.status = r.value.status;
-          dev.latency = r.value.latency;
-          changed = true;
-        }
-      }
-    }
-  });
-
-  if (changed) {
-    saveDevices(updated);
-  }
-  return updated;
 }
 
 // ==================== POLLING ====================
 async function poll() {
   try {
-    let devices = loadDevices();
-    devices = await monitorDevices(devices);
+    const devices = await fetchDevices();
     renderDevices(devices);
     lastUpdateEl.textContent = new Date().toLocaleTimeString();
   } catch(e) {
@@ -235,20 +255,12 @@ async function poll() {
 }
 
 // ==================== FORM TAMBAH ====================
-document.getElementById('addForm').addEventListener('submit', () => {
-  const addMsg = document.getElementById('addMsg');
-  addMsg.textContent = 'Menambahkan...';
-  addMsg.style.color = '';
-
+document.getElementById('addForm').addEventListener('submit', async () => {
   const nama = document.getElementById('addNama').value.trim();
   const ip = document.getElementById('addIp').value.trim();
   const lokasi = document.getElementById('addLokasi').value.trim();
 
-  if (!nama || !ip || !lokasi) {
-    addMsg.textContent = 'Semua field wajib diisi.';
-    addMsg.style.color = '#ff4d4d';
-    return;
-  }
+  if (!nama) { addMsg.textContent = 'Nama wajib diisi.'; addMsg.style.color = '#ff4d4d'; return; }
 
   const ipParts = ip.split('.');
   if (ipParts.length !== 4 || !ipParts.every(p => /^\d+$/.test(p) && Number(p) >= 0 && Number(p) <= 255)) {
@@ -257,37 +269,22 @@ document.getElementById('addForm').addEventListener('submit', () => {
     return;
   }
 
-  const devices = loadDevices();
-
-  if (devices.some(d => d.ip === ip)) {
-    addMsg.textContent = 'IP sudah ada.';
+  try {
+    addMsg.textContent = 'Menambahkan...';
+    addMsg.style.color = '';
+    await addDevice(nama, ip, lokasi);
+    addMsg.textContent = 'Perangkat berhasil ditambahkan.';
+    addMsg.style.color = '#26d07c';
+    document.getElementById('addForm').reset();
+    await poll();
+  } catch (err) {
+    addMsg.textContent = 'Gagal: ' + err.message;
     addMsg.style.color = '#ff4d4d';
-    return;
   }
-
-  const newDevice = {
-    id: getNextId(devices),
-    nama,
-    ip,
-    lokasi,
-    status: 'unknown',
-    latency: null
-  };
-  devices.push(newDevice);
-  saveDevices(devices);
-
-  addMsg.textContent = 'Perangkat berhasil ditambahkan.';
-  addMsg.style.color = '#26d07c';
-  document.getElementById('addForm').reset();
-  poll();
 });
 
 // ==================== FORM UBAH IP ====================
-document.getElementById('editForm').addEventListener('submit', () => {
-  const editMsg = document.getElementById('editMsg');
-  editMsg.textContent = 'Menyimpan...';
-  editMsg.style.color = '';
-
+document.getElementById('editForm').addEventListener('submit', async () => {
   const id = Number(document.getElementById('editId').value);
   const ip = document.getElementById('editIp').value.trim();
 
@@ -304,29 +301,18 @@ document.getElementById('editForm').addEventListener('submit', () => {
     return;
   }
 
-  let devices = loadDevices();
-  const idx = devices.findIndex(d => d.id === id);
-  if (idx === -1) {
-    editMsg.textContent = 'Perangkat dengan ID tersebut tidak ditemukan.';
+  try {
+    editMsg.textContent = 'Menyimpan...';
+    editMsg.style.color = '';
+    await updateDeviceIp(id, ip);
+    editMsg.textContent = 'IP berhasil diubah.';
+    editMsg.style.color = '#26d07c';
+    document.getElementById('editForm').reset();
+    await poll();
+  } catch (err) {
+    editMsg.textContent = 'Gagal: ' + err.message;
     editMsg.style.color = '#ff4d4d';
-    return;
   }
-
-  if (devices.some((d, i) => i !== idx && d.ip === ip)) {
-    editMsg.textContent = 'IP sudah ada pada perangkat lain.';
-    editMsg.style.color = '#ff4d4d';
-    return;
-  }
-
-  devices[idx].ip = ip;
-  devices[idx].status = 'offline';
-  devices[idx].latency = null;
-  saveDevices(devices);
-
-  editMsg.textContent = 'IP berhasil diubah.';
-  editMsg.style.color = '#26d07c';
-  document.getElementById('editForm').reset();
-  poll();
 });
 
 // ==================== LIVE TIMER ====================
